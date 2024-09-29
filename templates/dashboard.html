@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard</title>
+</head>
+<body>
+    <h1>Welcome, {{ user['name'] }}</h1>
+    <p>Email: {{ user['email'] }}</p>
+
+    <nav>
+        <a href="{{ url_for('upload_receipt') }}">Upload Receipt</a>
+        <a href="{{ url_for('view_transactions') }}">View Transactions</a>
+        <a href="{{ url_for('logout') }}">Logout</a>
+    </nav>
+</body>
+</html>
