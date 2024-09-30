@@ -1,66 +1,69 @@
-import pytesseract
-from PIL import Image
+from flask import Flask, request, jsonify
 import boto3
-import os
-from decimal import Decimal
+import re
 
-# Initialize S3 and DynamoDB clients
+app = Flask(__name__)
+
+# AWS Clients
 s3 = boto3.client('s3')
+textract = boto3.client('textract')
 dynamodb = boto3.resource('dynamodb')
-table = dynamodb.Table('Expenses')
+table = dynamodb.Table('ExpensesTable')
 
-# Download receipt from S3
-def download_receipt(bucket, file_key, download_path):
-    s3.download_file(bucket, file_key, download_path)
 
-# Extract text using Tesseract
-def extract_text_from_receipt(image_path):
-    img = Image.open(image_path)
-    return pytesseract.image_to_string(img)
 
-# Save extracted data to DynamoDB
-def save_to_dynamodb(user_id, amount, description, date):
+
+def extract_text_from_s3(bucket_name, file_name):
+    response = textract.detect_document_text(
+        Document={'S3Object': {'Bucket': bucket_name, 'Name': file_name}}
+    )
+    return response
+
+
+def store_expense_data(user_id, expense_id, amount, date, description):
     table.put_item(
         Item={
             'UserId': user_id,
-            'ExpenseId': str(uuid.uuid4()),
-            'Amount': Decimal(str(amount)),
-            'Description': description,
-            'Date': date
+            'ExpenseId': expense_id,
+            'Amount': amount,
+            'Date': date,
+            'Description': description
         }
     )
 
-# Main function to process the receipt
-def process_receipt(bucket, file_key):
-    download_path = '/tmp/' + file_key
-    download_receipt(bucket, file_key, download_path)
 
-    # Use Tesseract to extract text from the receipt
-    extracted_text = extract_text_from_receipt(download_path)
-    
-    # Parse the extracted text to get necessary details (this would require custom logic)
-    total_amount = parse_total(extracted_text)
-    description = 'Sample description'
-    user_id = 'User1'
-    date = '2024-09-29'
+# Function to extract total from text
+def extract_total_amount(extracted_text):
+    total_pattern = re.compile(r'(total|amount due|balance)', re.IGNORECASE)
+    amount_pattern = re.compile(r'\$\s?([0-9,.]+)')
 
-    # Save the data to DynamoDB
-    save_to_dynamodb(user_id, total_amount, description, date)
+    for line in extracted_text:
+        if total_pattern.search(line):
+            amount_match = amount_pattern.search(line)
+            if amount_match:
+                return amount_match.group(0)
+    return None
 
-    return 'Processed successfully!'
+# Function to upload receipt to S3 and process it
+@app.route('/upload', methods=['POST'])
+def upload_receipt():
+    file = request.files['file']
+    bucket_name = 'et-receipts-bucket'
+    s3.upload_fileobj(file, bucket_name, file.filename)
 
-def parse_total(text):
-    # Implement logic to find the "Total" in the text (as demonstrated in previous steps)
-    lines = text.split('\n')
-    for line in lines:
-        if 'TOTAL' in line.upper() or 'TOTAL PURCHASE' in line.upper():
-            try:
-                return float(line.split()[-1].replace('$', ''))
-            except ValueError:
-                continue
-    return 0.00
+    # Extract text from the receipt
+    response = textract.detect_document_text(
+        Document={'S3Object': {'Bucket': bucket_name, 'Name': file.filename}}
+    )
+
+    # Parse the extracted text
+    extracted_text = [block['Text'] for block in response['Blocks'] if block['BlockType'] == 'LINE']
+    total_amount = extract_total_amount(extracted_text)
+
+    # Store the extracted data in DynamoDB
+    store_expense_data('user123', 'expense456', total_amount, '2024-09-30', 'Sample receipt')
+
+    return jsonify({"Total Amount": total_amount})
 
 if __name__ == "__main__":
-    bucket = 'et-receipts-bucket'
-    file_key = 'receipt.jpg'
-    process_receipt(bucket, file_key)
+    app.run(debug=True)
